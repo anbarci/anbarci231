@@ -1,61 +1,51 @@
-
-### 3. `src/ultimate_hybrid_strategy.py` - Ana Strateji Dosyası
-
-```python
-cat > src/ultimate_hybrid_strategy.py << 'STRATEGY_EOF'
-"""
-Ultimate Hybrid Trading Strategy for Hummingbot V2
-GitHub Version - Optimized for Production Deployment
-
-Combines:
-- Professional Grid Trading System (8-level ATR-based)
-- Kaanermi Launch Strategy (NY session needle detection)
-- Market Profile Integration (POC, VAH, VAL)
-- Advanced Risk Management System
-- Real-time Performance Tracking
-
-Version: 2.0
-Author: Based on Pine Script + Kaanermi Launch Method
-License: MIT
-Repository: https://github.com/your-username/hummingbot-ultimate-hybrid
-"""
-
-import asyncio
+import logging
 import pandas as pd
 import numpy as np
-from datetime import datetime, time, timedelta
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple, Set
-import logging
-import json
-import os
-from pathlib import Path
+from typing import Dict, List, Optional, Set
+from datetime import datetime, timezone, time, timedelta
 
-try:
-    from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
-    from hummingbot.core.data_type.common import TradeType, OrderType
-    from hummingbot.core.event.events import OrderFilledEvent, BuyOrderCompletedEvent, SellOrderCompletedEvent
-except ImportError as e:
-    print(f"❌ Hummingbot import error: {e}")
-    print("Please ensure Hummingbot is properly installed")
-    exit(1)
+from hummingbot.strategy.script_strategy_base import ScriptStrategyBase
+from hummingbot.core.data_type.common import OrderType, PriceType, PositionMode
+from hummingbot.core.data_type.limit_order import LimitOrder
+from hummingbot.core.event.events import (
+    BuyOrderCreatedEvent,
+    SellOrderCreatedEvent,
+    OrderFilledEvent,
+    MarketOrderFailureEvent,
+    OrderCancelledEvent,
+    OrderExpiredEvent,
+    BuyOrderCompletedEvent,
+    SellOrderCompletedEvent
+)
+from hummingbot.connector.connector_base import ConnectorBase
+from hummingbot.core.utils.market_price import get_mid_price
 
 
 class UltimateHybridStrategy(ScriptStrategyBase):
     """
-    Ultimate Hybrid Trading Strategy
+    Ultimate Hybrid Trading Strategy for Hummingbot V2
     
-    This strategy combines three powerful approaches:
-    1. Grid Trading - Captures range-bound market movements
-    2. Launch Strategy - Captures breakout opportunities (Kaanermi method)
-    3. Market Profile - Provides market structure context
+    Combines:
+    - Professional Grid Trading System (ATR-based)
+    - Kaanermi Launch Strategy (NY session)
+    - Market Profile Integration (POC/VAH/VAL)
+    - Advanced Risk Management
+    
+    Repository: https://github.com/anbarci/hummingbot-ultimate-hybrid
+    Version: 2.0
+    Author: anbarci
+    License: MIT
     """
     
-    # ======================== STRATEGY CONFIGURATION ========================
+    # ======================== CONFIGURATION ========================
     
-    # Core Settings
-    exchange = "kucoin"
-    trading_pairs = ["WLD-USDT"]
+    # Exchange and Trading Pairs
+    markets = {"kucoin": {"WLD-USDT"}}
+    
+    # Strategy Information
+    version = "2.0"
+    github_repo = "anbarci/hummingbot-ultimate-hybrid"
     
     # Grid Trading Configuration
     enable_grid = True
@@ -65,830 +55,1336 @@ class UltimateHybridStrategy(ScriptStrategyBase):
     atr_period = 14
     atr_multiplier = 1.5
     grid_rebalance_threshold = 0.05
+    grid_order_amount = 0.1
+    grid_max_spread = 0.15
+    grid_min_spread = 0.005
     
     # Launch Strategy Configuration (Kaanermi Method)
     enable_launch_strategy = True
-    launch_time_start = "01:00"
-    launch_time_end = "08:00"
+    launch_time_start = time(1, 0)  # 01:00 TRT (NY session)
+    launch_time_end = time(8, 0)    # 08:00 TRT (NY session)
     needle_body_ratio = 2.0
     launch_cooldown_minutes = 30
     enable_bias_filter = True
+    launch_min_range_pct = 0.005
+    launch_max_range_pct = 0.050
     
     # Market Profile Configuration
     enable_market_profile = True
     mp_session_length = 24
     mp_tpo_percent = 70.0
     mp_price_levels = 20
+    mp_update_frequency = 30
+    mp_poc_weight = 0.4
     
     # Risk Management Configuration
     enable_advanced_risk = True
     max_portfolio_risk = 12.0
     max_single_position = 4.0
     max_concurrent_trades = 10
+    min_balance_threshold = 50
     stop_loss_atr = 2.0
     take_profit_atr = 3.5
-    min_balance_threshold = 50
+    risk_reward_ratio = 1.75
+    emergency_stop_drawdown = 20.0
+    daily_loss_limit = 5.0
+    max_consecutive_losses = 5
     
     # Advanced Filters
     enable_volatility_filter = True
     volatility_threshold = 1.5
+    volatility_period = 20
+    high_volatility_threshold = 5.0
     enable_trend_filter = True
     trend_period = 50
-    enable_time_filter = True
+    trend_strength_threshold = 0.015
+    trend_confirmation_period = 3
+    enable_volume_filter = True
+    min_volume_ratio = 0.5
+    volume_spike_threshold = 3.0
+    volume_period = 20
     
-    # GitHub Specific Settings
-    version = "2.0"
-    github_repo = "hummingbot-ultimate-hybrid"
+    # Performance Settings
+    order_refresh_time = 30
+    price_update_interval = 5
+    status_update_interval = 60
+    max_price_history = 500
+    max_trade_history = 1000
     
-    def __init__(self):
-        super().__init__()
-        
-        # Initialize logging with GitHub repository context
-        self.setup_enhanced_logging()
-        
-        # ==================== STATE MANAGEMENT ====================
-        
-        # Grid Trading State
-        self.grid_base_price: Optional[float] = None
-        self.grid_initialized: bool = False
-        self.grid_levels_buy: List[float] = []
-        self.grid_levels_sell: List[float] = []
-        self.active_grid_orders: Dict[str, str] = {}
-        self.grid_spacing: float = 0.0
-        self.last_grid_rebalance: datetime = datetime.now()
-        self.total_grid_trades: int = 0
-        
-        # Launch Strategy State (Kaanermi)
-        self.launch_high: Optional[float] = None
-        self.launch_low: Optional[float] = None
-        self.launch_volume: float = 0.0
-        self.launch_session_active: bool = False
-        self.launch_levels_detected: bool = False
-        self.last_launch_trade: datetime = datetime.now() - timedelta(hours=1)
-        self.needle_detected_time: Optional[datetime] = None
-        self.current_bias: int = 0
-        self.total_launch_trades: int = 0
-        
-        # Market Profile State
-        self.mp_poc_price: Optional[float] = None
-        self.mp_vah_price: Optional[float] = None
-        self.mp_val_price: Optional[float] = None
-        self.mp_is_valid: bool = False
-        self.mp_last_calculation: datetime = datetime.now()
-        self.mp_value_area_range: float = 0.0
-        
-        # Technical Analysis State
-        self.atr_value: float = 0.0
-        self.current_price: float = 0.0
-        self.trend_direction: int = 0
-        self.price_momentum: float = 0.0
-        self.volatility_ratio: float = 0.0
-        self.sma_20: float = 0.0
-        self.sma_50: float = 0.0
-        
-        # Risk Management State
-        self.account_balance: float = 0.0
-        self.total_exposure: float = 0.0
-        self.current_portfolio_risk: float = 0.0
-        self.active_trades_count: int = 0
-        self.can_trade: bool = True
-        self.restriction_reason: str = ""
-        
-        # Performance Tracking State
-        self.total_trades: int = 0
-        self.winning_trades: int = 0
-        self.losing_trades: int = 0
-        self.total_pnl: float = 0.0
-        self.daily_pnl: float = 0.0
-        self.max_drawdown: float = 0.0
-        self.win_rate: float = 0.0
-        self.grid_profit: float = 0.0
-        self.launch_profit: float = 0.0
-        
-        # Data Storage and Persistence
-        self.price_history: List[float] = []
-        self.volume_history: List[float] = []
-        self.trade_history: List[Dict] = []
-        self.session_start_time: datetime = datetime.now()
-        self.performance_log_file = "/root/hummingbot/logs/ultimate_hybrid_performance.json"
-        
-        # Initialize strategy
-        self.initialize_strategy()
-
-    def setup_enhanced_logging(self):
-        """Setup enhanced logging for GitHub version"""
-        try:
-            log_format = "%(asctime)s - UltimateHybrid v{} - %(levelname)s - %(message)s".format(self.version)
-            logging.basicConfig(
-                level=logging.INFO,
-                format=log_format,
-                handlers=[
-                    logging.FileHandler("/root/hummingbot/logs/ultimate_hybrid.log"),
-                    logging.StreamHandler()
-                ]
-            )
-            self.logger().info(f"🚀 Ultimate Hybrid Strategy v{self.version} initialized from GitHub")
-            self.logger().info(f"📦 Repository: {self.github_repo}")
-        except Exception as e:
-            print(f"Logging setup error: {e}")
-
-    def initialize_strategy(self):
-        """Initialize strategy components and load persistent data"""
-        try:
-            self.logger().info("🔧 Initializing Ultimate Hybrid Strategy components...")
-            
-            # Load previous session data if exists
-            self.load_performance_data()
-            
-            # Initialize market data feeds
-            self.setup_market_data_feeds()
-            
-            # Log configuration
-            self.log_strategy_configuration()
-            
-            self.logger().info("✅ Strategy initialization completed successfully")
-            
-        except Exception as e:
-            self.logger().error(f"❌ Strategy initialization failed: {e}")
-
-    def setup_market_data_feeds(self):
-        """Setup market data configurations"""
-        try:
-            # Primary 5-minute candles for main analysis
-            self.candles_config = {
-                "connector": self.exchange,
-                "trading_pair": self.trading_pairs[0],
-                "interval": "5m",
-                "max_records": 500
-            }
-            
-            # Hourly candles for Market Profile and trend analysis
-            self.hourly_candles_config = {
-                "connector": self.exchange, 
-                "trading_pair": self.trading_pairs[0],
-                "interval": "1h",
-                "max_records": 168
-            }
-            
-            self.logger().info("📊 Market data feeds configured")
-            
-        except Exception as e:
-            self.logger().error(f"Market data setup error: {e}")
-
-    def log_strategy_configuration(self):
-        """Log current strategy configuration"""
-        self.logger().info("⚙️ Strategy Configuration:")
-        self.logger().info(f"   Exchange: {self.exchange}")
-        self.logger().info(f"   Trading Pair: {self.trading_pairs[0]}")
-        self.logger().info(f"   Grid: {self.base_grid_count} levels, {self.grid_mode} mode")
-        self.logger().info(f"   Launch: {self.launch_time_start}-{self.launch_time_end} TRT")
-        self.logger().info(f"   Risk: {self.max_portfolio_risk}% portfolio, {self.max_single_position}% position")
-        self.logger().info(f"   Market Profile: {self.mp_tpo_percent}% value area")
-
-    def load_performance_data(self):
-        """Load performance data from previous sessions"""
-        try:
-            if os.path.exists(self.performance_log_file):
-                with open(self.performance_log_file, 'r') as f:
-                    data = json.load(f)
-                    self.total_trades = data.get('total_trades', 0)
-                    self.winning_trades = data.get('winning_trades', 0)
-                    self.losing_trades = data.get('losing_trades', 0)
-                    self.total_pnl = data.get('total_pnl', 0.0)
-                    self.logger().info(f"📈 Loaded performance data: {self.total_trades} trades, ${self.total_pnl:.2f} P&L")
-        except Exception as e:
-            self.logger().warning(f"Could not load performance data: {e}")
-
-    def save_performance_data(self):
-        """Save performance data for persistence"""
-        try:
-            data = {
-                'timestamp': datetime.now().isoformat(),
-                'total_trades': self.total_trades,
-                'winning_trades': self.winning_trades,
-                'losing_trades': self.losing_trades,
-                'total_pnl': self.total_pnl,
-                'win_rate': self.win_rate,
-                'grid_trades': self.total_grid_trades,
-                'launch_trades': self.total_launch_trades,
-                'max_drawdown': self.max_drawdown,
-                'account_balance': self.account_balance,
-                'strategy_version': self.version
-            }
-            
-            os.makedirs(os.path.dirname(self.performance_log_file), exist_ok=True)
-            with open(self.performance_log_file, 'w') as f:
-                json.dump(data, f, indent=2)
-                
-        except Exception as e:
-            self.logger().warning(f"Could not save performance data: {e}")
-
-    # ======================== MARKET DATA METHODS ========================
+    # ======================== INITIALIZATION ========================
     
-    def get_comprehensive_market_data(self) -> pd.DataFrame:
-        """
-        Get comprehensive OHLCV market data with realistic simulation
+    def __init__(self, connectors: Dict[str, ConnectorBase]):
+        super().__init__(connectors)
         
-        In production, this would connect to real exchange data feeds.
-        For GitHub version, includes robust simulation for testing.
-        """
-        try:
-            # Get current price from connector
-            connector = self.connectors[self.exchange]
-            current_price = connector.get_mid_price(self.trading_pairs[0])
-            
-            if current_price is None:
-                # Fallback to simulated data for testing
-                current_price = 2.5  # WLD-USDT approximate price
-            
-            self.current_price = float(current_price)
-            
-            # Generate comprehensive realistic OHLCV data
-            periods = 400  # Extended dataset for better analysis
-            dates = pd.date_range(end=datetime.now(), periods=periods, freq="5min")
-            
-            # Enhanced random seed for consistency
-            seed = int((datetime.now().timestamp() / 3600) % 1000)  # Changes hourly
-            np.random.seed(seed)
-            
-            # Create sophisticated price movement simulation
-            base_price = self.current_price
-            price_series = []
-            volume_series = []
-            
-            # Market regime parameters
-            trend_strength = np.random.choice([-0.4, -0.2, 0.0, 0.2, 0.4], p=[0.2, 0.25, 0.1, 0.25, 0.2])
-            volatility_regime = np.random.choice([0.5, 1.0, 1.5], p=[0.3, 0.5, 0.2])
-            
-            for i in range(periods):
-                if i == 0:
-                    price = base_price
-                else:
-                    # Multi-component price model
-                    
-                    # 1. Trend component
-                    trend_component = trend_strength * 0.00008 * i
-                    
-                    # 2. Mean reversion (prevents unrealistic drift)
-                    deviation = (price_series[-1] - base_price) / base_price
-                    mean_reversion = -0.02 * deviation
-                    
-                    # 3. Momentum component (short-term persistence)
-                    if i >= 3:
-                        recent_change = (price_series[-1] - price_series[-3]) / price_series[-3]
-                        momentum = 0.1 * recent_change
-                    else:
-                        momentum = 0.0
-                    
-                    # 4. Random noise with regime-dependent volatility
-                    base_volatility = base_price * 0.001 * volatility_regime
-                    noise = np.random.normal(0, base_volatility)
-                    
-                    # 5. Occasional volatility spikes (news events, etc.)
-                    if np.random.random() < 0.015:  # 1.5% chance
-                        spike_direction = np.random.choice([-1, 1])
-                        spike_magnitude = np.random.uniform(2, 4)
-                        noise += spike_direction * base_volatility * spike_magnitude
-                    
-                    # Combine all components
-                    total_change = trend_component + mean_reversion + momentum + noise
-                    new_price = price_series[-1] + total_change
-                    
-                    # Ensure reasonable bounds
-                    price = max(new_price, base_price * 0.7, 0.1)  # Prevent negative/extreme prices
-                
-                price_series.append(price)
-                
-                # Sophisticated volume simulation
-                hour = dates[i].hour
-                day_of_week = dates[i].weekday()
-                
-                # Base volume with time-of-day patterns
-                if 1 <= hour <= 8:  # NY launch session
-                    base_vol = 3000 * (1.5 + 0.3 * np.sin((hour-1) * np.pi / 7))
-                elif 8 <= hour <= 16:  # EU/US overlap
-                    base_vol = 2500 * (1.2 + 0.2 * np.sin((hour-8) * np.pi / 8))
-                elif 16 <= hour <= 22:  # US session
-                    base_vol = 2000 * (1.0 + 0.1 * np.sin((hour-16) * np.pi / 6))
-                else:  # Asian/quiet hours
-                    base_vol = 1000 * (0.6 + 0.2 * np.random.random())
-                
-                # Weekend volume reduction
-                if day_of_week >= 5:  # Saturday/Sunday
-                    base_vol *= 0.4
-                
-                # Volume volatility correlation
-                if i > 0:
-                    price_change_pct = abs(price_series[-1] - price_series[-2]) / price_series[-2]
-                    volume_multiplier = 1 + (price_change_pct * 50)  # Higher volume on big moves
-                    volume_multiplier = min(volume_multiplier, 3.0)  # Cap at 3x
-                else:
-                    volume_multiplier = 1.0
-                
-                final_volume = base_vol * volume_multiplier * np.random.uniform(0.7, 1.3)
-                volume_series.append(max(final_volume, 100))  # Minimum volume floor
-            
-            # Create comprehensive OHLCV DataFrame
-            ohlcv_data = []
-            for i, (timestamp, close_price) in enumerate(zip(dates, price_series)):
-                
-                # Generate realistic OHLC from close
-                intracandle_volatility = 0.0008 * volatility_regime
-                
-                # Create open price
-                if i == 0:
-                    open_price = close_price
-                else:
-                    # Gap from previous close
-                    gap_size = np.random.normal(0, close_price * 0.0002)
-                    open_price = price_series[i-1] + gap_size
-                
-                # Create high/low with realistic wick formation
-                high_wick = close_price * np.random.exponential(intracandle_volatility * 2)
-                low_wick = close_price * np.random.exponential(intracandle_volatility * 2)
-                
-                high_price = max(open_price, close_price) + high_wick
-                low_price = min(open_price, close_price) - low_wick
-                
-                # Special formations during launch hours for strategy testing
-                if (1 <= timestamp.hour <= 8) and np.random.random() < 0.03:
-                    # Create needle formations for launch strategy
-                    if np.random.random() < 0.5:
-                        # Upper needle
-                        high_price = close_price * (1 + np.random.uniform(0.004, 0.012))
-                    else:
-                        # Lower needle
-                        low_price = close_price * (1 - np.random.uniform(0.004, 0.012))
-                
-                # Ensure OHLC consistency
-                high_price = max(open_price, high_price, close_price)
-                low_price = min(open_price, low_price, close_price)
-                
-                ohlcv_data.append({
-                    'timestamp': timestamp,
-                    'open': open_price,
-                    'high': high_price,
-                    'low': low_price,
-                    'close': close_price,
-                    'volume': volume_series[i]
-                })
-            
-            df = pd.DataFrame(ohlcv_data)
-            
-            # Store recent history for trend analysis
-            self.price_history = price_series[-100:]
-            self.volume_history = volume_series[-100:]
-            
-            return df
-            
-        except Exception as e:
-            self.logger().error(f"Error generating market data: {e}")
-            return pd.DataFrame()
-
-    def calculate_technical_indicators(self, df: pd.DataFrame) -> Dict[str, float]:
-        """
-        Calculate comprehensive technical indicators for decision making
+        # Core Variables
+        self.trading_pairs = list(self.markets.values())[0]  # Get trading pairs
+        self.exchange = list(self.markets.keys())[0]         # Get exchange name
+        self.connector = self.connectors[self.exchange]      # Get connector
         
-        Enhanced for GitHub version with additional indicators and error handling
-        """
-        try:
-            if len(df) < 50:
-                return {}
-            
-            indicators = {}
-            
-            # ===== ATR (Average True Range) - Volatility Measure =====
-            df_copy = df.copy()
-            df_copy['prev_close'] = df_copy['close'].shift(1)
-            df_copy['tr1'] = df_copy['high'] - df_copy['low']
-            df_copy['tr2'] = abs(df_copy['high'] - df_copy['prev_close']).fillna(0)
-            df_copy['tr3'] = abs(df_copy['low'] - df_copy['prev_close']).fillna(0)
-            df_copy['tr'] = df_copy[['tr1', 'tr2', 'tr3']].max(axis=1)
-            
-            atr_series = df_copy['tr'].rolling(self.atr_period).mean()
-            self.atr_value = atr_series.iloc[-1] if not pd.isna(atr_series.iloc[-1]) else 0.0
-            indicators['atr'] = self.atr_value
-            
-            # ===== Moving Averages for Trend Analysis =====
-            sma_20_series = df['close'].rolling(20).mean()
-            sma_50_series = df['close'].rolling(50).mean()
-            
-            self.sma_20 = sma_20_series.iloc[-1] if not pd.isna(sma_20_series.iloc[-1]) else self.current_price
-            self.sma_50 = sma_50_series.iloc[-1] if not pd.isna(sma_50_series.iloc[-1]) else self.current_price
-            
-            indicators['sma_20'] = self.sma_20
-            indicators['sma_50'] = self.sma_50
-            
-            # EMA for faster trend detection
-            ema_12_series = df['close'].ewm(span=12).mean()
-            ema_26_series = df['close'].ewm(span=26).mean()
-            
-            indicators['ema_12'] = ema_12_series.iloc[-1] if not pd.isna(ema_12_series.iloc[-1]) else self.current_price
-            indicators['ema_26'] = ema_26_series.iloc[-1] if not pd.isna(ema_26_series.iloc[-1]) else self.current_price
-            
-            # ===== Enhanced Trend Direction Analysis =====
-            current_price = df['close'].iloc[-1]
-            
-            # Multiple timeframe trend analysis
-            price_vs_sma50 = (current_price - self.sma_50) / self.sma_50
-            
-            if price_vs_sma50 > 0.015:  # >1.5% above SMA50
-                self.trend_direction = 1  # Strong uptrend
-            elif price_vs_sma50 < -0.015:  # >1.5% below SMA50
-                self.trend_direction = -1  # Strong downtrend
-            else:
-                self.trend_direction = 0  # Sideways/uncertain
-            
-            # ===== Market Bias for Launch Strategy =====
-            if self.enable_bias_filter:
-                # Multi-factor bias determination
-                sma_alignment = self.sma_20 > self.sma_50  # Trend alignment
-                price_position = current_price > self.sma_20  # Price above short MA
-                
-                if sma_alignment and price_position:
-                    self.current_bias = 1  # Bullish - favor long launches
-                elif not sma_alignment and not price_position:
-                    self.current_bias = -1  # Bearish - favor short launches
-                else:
-                    self.current_bias = 0  # Mixed/neutral
-            
-            # ===== Volatility Metrics =====
-            self.volatility_ratio = (self.atr_value / current_price) if current_price > 0 else 0
-            indicators['volatility_ratio'] = self.volatility_ratio
-            
-            # Bollinger Band width as volatility measure
-            if len(df) >= 20:
-                bb_middle = df['close'].rolling(20).mean()
-                bb_std = df['close'].rolling(20).std()
-                bb_width = (bb_std.iloc[-1] * 4) / bb_middle.iloc[-1] if bb_middle.iloc[-1] > 0 else 0
-                indicators['bb_width'] = bb_width
-            
-            # ===== Momentum Indicators =====
-            if len(df) >= 14:
-                # Price momentum over multiple periods
-                price_14_ago = df['close'].iloc[-14]
-                price_7_ago = df['close'].iloc[-7]
-                
-                self.price_momentum = (current_price - price_14_ago) / price_14_ago
-                indicators['momentum_14'] = self.price_momentum
-                indicators['momentum_7'] = (current_price - price_7_ago) / price_7_ago
-            
-            # ===== RSI for Overbought/Oversold Conditions =====
-            if len(df) >= 14:
-                delta = df['close'].diff()
-                gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                
-                # Avoid division by zero
-                rs = gain / loss.replace(0, 0.001)
-                rsi = 100 - (100 / (1 + rs))
-                
-                if not pd.isna(rsi.iloc[-1]):
-                    indicators['rsi'] = rsi.iloc[-1]
-                else:
-                    indicators['rsi'] = 50  # Neutral RSI
-            
-            # ===== Volume Analysis =====
-            if len(df) >= 20:
-                avg_volume = df['volume'].rolling(20).mean().iloc[-1]
-                current_volume = df['volume'].iloc[-1]
-                indicators['volume_ratio'] = current_volume / avg_volume if avg_volume > 0 else 1
-            
-            return indicators
-            
-        except Exception as e:
-            self.logger().error(f"Error calculating technical indicators: {e}")
-            return {}
-
-    # ===== Continue with all other methods from the original strategy =====
-    # [The rest of the methods remain the same as in the previous complete version]
-    # For brevity, I'm including the key methods that are specific to the GitHub version
-
-    # ======================== MAIN EXECUTION METHOD ========================
+        # Session Management
+        self.session_start_time = datetime.now()
+        self.last_status_update = datetime.now()
+        self.performance_log_file = f"logs/ultimate_hybrid_performance_{datetime.now().strftime('%Y%m%d')}.json"
+        
+        # Market Data Storage
+        self.price_history = {}
+        self.volume_history = {}
+        self.trade_history = []
+        self.candle_data = {}
+        
+        # Strategy State Variables
+        self.current_price = Decimal("0")
+        self.atr_value = Decimal("0")
+        self.volatility_ratio = 0.0
+        self.trend_direction = 0  # -1: Down, 0: Sideways, 1: Up
+        self.current_bias = 0     # -1: Bearish, 0: Neutral, 1: Bullish
+        self.price_momentum = 0.0
+        self.sma_20 = Decimal("0")
+        self.sma_50 = Decimal("0")
+        
+        # Grid Trading Variables
+        self.grid_initialized = False
+        self.grid_base_price = Decimal("0")
+        self.grid_spacing = Decimal("0")
+        self.active_grid_orders = {}
+        self.grid_buy_levels = []
+        self.grid_sell_levels = []
+        self.total_grid_trades = 0
+        self.grid_profit = Decimal("0")
+        
+        # Launch Strategy Variables
+        self.launch_session_active = False
+        self.launch_high = None
+        self.launch_low = None
+        self.launch_range_confirmed = False
+        self.last_launch_trade = datetime.now() - timedelta(hours=1)
+        self.total_launch_trades = 0
+        self.launch_profit = Decimal("0")
+        
+        # Market Profile Variables
+        self.mp_is_valid = False
+        self.mp_poc_price = Decimal("0")   # Point of Control
+        self.mp_vah_price = Decimal("0")   # Value Area High
+        self.mp_val_price = Decimal("0")   # Value Area Low
+        self.mp_value_area_range = Decimal("0")
+        self.mp_tpo_data = {}
+        self.last_mp_update = datetime.now()
+        
+        # Risk Management Variables
+        self.account_balance = Decimal("0")
+        self.current_portfolio_risk = 0.0
+        self.active_trades_count = 0
+        self.total_exposure = Decimal("0")
+        self.can_trade = True
+        self.restriction_reason = ""
+        self.consecutive_losses = 0
+        self.daily_pnl = Decimal("0")
+        self.max_drawdown = 0.0
+        
+        # Performance Metrics
+        self.total_trades = 0
+        self.winning_trades = 0
+        self.losing_trades = 0
+        self.total_pnl = Decimal("0")
+        self.win_rate = 0.0
+        
+        # Initialize components
+        self.initialize_data_structures()
+        
+        self.logger().info(f"🚀 Ultimate Hybrid Strategy v{self.version} Initialized")
+        self.logger().info(f"📦 Repository: github.com/{self.github_repo}")
+        self.logger().info(f"🔧 Components: Grid={self.enable_grid}, Launch={self.enable_launch_strategy}, MP={self.enable_market_profile}")
+    
+    def initialize_data_structures(self):
+        """Initialize data structures for each trading pair"""
+        for trading_pair in self.trading_pairs:
+            self.price_history[trading_pair] = []
+            self.volume_history[trading_pair] = []
+            self.candle_data[trading_pair] = []
+            self.active_grid_orders[trading_pair] = {"buy": {}, "sell": {}}
+    
+    # ======================== MAIN STRATEGY LOOP ========================
     
     def on_tick(self):
-        """
-        Main strategy execution - GitHub optimized version
-        
-        Enhanced error handling and performance logging for production deployment
-        """
+        """Main strategy execution - called every tick"""
         try:
-            # === 1. HEALTH CHECK ===
-            if not self.pre_execution_checks():
+            # Update market data
+            self.update_market_data()
+            
+            # Update account information
+            self.update_account_info()
+            
+            # Run risk management checks
+            if not self.risk_management_check():
                 return
             
-            # === 2. DATA COLLECTION ===
-            df = self.get_comprehensive_market_data()
-            if len(df) < 100:
-                self.logger().warning("Insufficient market data for analysis")
-                return
-            
-            # === 3. TECHNICAL ANALYSIS ===
-            indicators = self.calculate_technical_indicators(df)
-            if not indicators:
-                return
-            
-            # Update current price
-            self.current_price = float(df['close'].iloc[-1])
-            
-            # === 4. RISK MANAGEMENT UPDATE ===
-            if not self.update_comprehensive_risk_metrics():
-                self.logger().warning("Risk limits exceeded - trading suspended")
-                return
-            
-            # === 5. MARKET PROFILE UPDATE ===
+            # Execute strategy components
             if self.enable_market_profile:
-                self.update_market_profile_analysis(df)
+                self.update_market_profile()
             
-            # === 6. STRATEGY EXECUTION ===
-            self.execute_hybrid_strategy(df)
+            if self.enable_grid and self.can_trade:
+                self.execute_grid_strategy()
             
-            # === 7. PERFORMANCE TRACKING ===
-            self.update_performance_tracking()
+            if self.enable_launch_strategy and self.can_trade:
+                self.execute_launch_strategy()
             
-            # === 8. PERIODIC TASKS ===
-            self.handle_periodic_tasks()
+            # Update performance metrics
+            self.update_performance_metrics()
+            
+            # Log performance periodically
+            if (datetime.now() - self.last_status_update).total_seconds() > self.status_update_interval:
+                self.log_performance_data()
+                self.last_status_update = datetime.now()
+                
+        except Exception as e:
+            self.logger().error(f"❌ Error in on_tick: {e}")
+    
+    # ======================== MARKET DATA MANAGEMENT ========================
+    
+    def update_market_data(self):
+        """Update current market data and indicators"""
+        try:
+            for trading_pair in self.trading_pairs:
+                # Get current price
+                mid_price = get_mid_price(self.connector, trading_pair)
+                if mid_price and mid_price > 0:
+                    self.current_price = Decimal(str(mid_price))
+                    
+                    # Update price history
+                    self.price_history[trading_pair].append({
+                        'timestamp': datetime.now(),
+                        'price': float(self.current_price),
+                        'volume': self.get_current_volume(trading_pair)
+                    })
+                    
+                    # Limit history size
+                    if len(self.price_history[trading_pair]) > self.max_price_history:
+                        self.price_history[trading_pair] = self.price_history[trading_pair][-self.max_price_history:]
+                    
+                    # Calculate technical indicators
+                    self.calculate_technical_indicators(trading_pair)
+                    
+        except Exception as e:
+            self.logger().error(f"❌ Error updating market data: {e}")
+    
+    def get_current_volume(self, trading_pair: str) -> float:
+        """Get current volume for trading pair"""
+        try:
+            order_book = self.connector.get_order_book(trading_pair)
+            if order_book:
+                # Calculate volume from order book depth
+                bids = list(order_book.bid_entries())[:10]  # Top 10 levels
+                asks = list(order_book.ask_entries())[:10]
+                
+                total_volume = sum([float(entry.amount) for entry in bids + asks])
+                return total_volume
+            return 0.0
+        except Exception:
+            return 0.0
+    
+    def calculate_technical_indicators(self, trading_pair: str):
+        """Calculate ATR, SMA, and other technical indicators"""
+        try:
+            prices = [item['price'] for item in self.price_history[trading_pair][-100:]]
+            
+            if len(prices) < 20:
+                return
+            
+            # Calculate Simple Moving Averages
+            self.sma_20 = Decimal(str(np.mean(prices[-20:])))
+            if len(prices) >= 50:
+                self.sma_50 = Decimal(str(np.mean(prices[-50:])))
+            
+            # Calculate ATR (simplified)
+            if len(prices) >= self.atr_period:
+                high_low = np.array([abs(prices[i] - prices[i-1]) for i in range(1, len(prices))])
+                self.atr_value = Decimal(str(np.mean(high_low[-self.atr_period:])))
+            
+            # Calculate volatility ratio
+            if self.current_price > 0:
+                self.volatility_ratio = float(self.atr_value) / float(self.current_price) * 1000
+            
+            # Calculate trend direction
+            if len(prices) >= self.trend_period:
+                recent_avg = np.mean(prices[-10:])
+                older_avg = np.mean(prices[-self.trend_period:-10])
+                price_change = (recent_avg - older_avg) / older_avg
+                
+                if price_change > self.trend_strength_threshold:
+                    self.trend_direction = 1  # Uptrend
+                elif price_change < -self.trend_strength_threshold:
+                    self.trend_direction = -1  # Downtrend
+                else:
+                    self.trend_direction = 0  # Sideways
+            
+            # Calculate momentum
+            if len(prices) >= 10:
+                self.price_momentum = (prices[-1] - prices[-10]) / prices[-10]
+            
+            # Calculate bias
+            if self.current_price > self.sma_20:
+                self.current_bias = 1  # Bullish
+            elif self.current_price < self.sma_20:
+                self.current_bias = -1  # Bearish
+            else:
+                self.current_bias = 0  # Neutral
+                
+        except Exception as e:
+            self.logger().error(f"❌ Error calculating indicators: {e}")
+    
+    # ======================== GRID TRADING SYSTEM ========================
+    
+    def execute_grid_strategy(self):
+        """Execute grid trading logic"""
+        try:
+            for trading_pair in self.trading_pairs:
+                if not self.grid_initialized:
+                    self.initialize_grid(trading_pair)
+                else:
+                    self.manage_grid_orders(trading_pair)
+                    
+        except Exception as e:
+            self.logger().error(f"❌ Error in grid strategy: {e}")
+    
+    def initialize_grid(self, trading_pair: str):
+        """Initialize grid levels based on current market conditions"""
+        try:
+            if self.current_price <= 0 or self.atr_value <= 0:
+                return
+            
+            # Set grid base price (use Market Profile POC if available)
+            if self.enable_market_profile and self.mp_is_valid and self.mp_poc_price > 0:
+                # Blend current price with POC
+                poc_weight = Decimal(str(self.mp_poc_weight))
+                price_weight = Decimal("1") - poc_weight
+                self.grid_base_price = (self.current_price * price_weight) + (self.mp_poc_price * poc_weight)
+            else:
+                self.grid_base_price = self.current_price
+            
+            # Calculate dynamic grid spacing using ATR
+            if self.grid_mode == "ATR Based":
+                self.grid_spacing = self.atr_value * Decimal(str(self.atr_multiplier))
+            else:
+                self.grid_spacing = self.grid_base_price * Decimal(str(self.base_spacing_pct / 100))
+            
+            # Ensure spacing is within limits
+            min_spacing = self.grid_base_price * Decimal(str(self.grid_min_spread))
+            max_spacing = self.grid_base_price * Decimal(str(self.grid_max_spread / self.base_grid_count))
+            
+            self.grid_spacing = max(min_spacing, min(self.grid_spacing, max_spacing))
+            
+            # Generate grid levels
+            self.grid_buy_levels = []
+            self.grid_sell_levels = []
+            
+            for i in range(1, self.base_grid_count + 1):
+                buy_price = self.grid_base_price - (self.grid_spacing * Decimal(str(i)))
+                sell_price = self.grid_base_price + (self.grid_spacing * Decimal(str(i)))
+                
+                if buy_price > 0:
+                    self.grid_buy_levels.append(buy_price)
+                self.grid_sell_levels.append(sell_price)
+            
+            self.grid_initialized = True
+            self.logger().info(f"✅ Grid initialized for {trading_pair}: Base={self.grid_base_price:.6f}, Spacing={self.grid_spacing:.6f}")
+            
+            # Place initial grid orders
+            self.place_grid_orders(trading_pair)
             
         except Exception as e:
-            self.logger().error(f"❌ Critical error in main execution: {e}")
-            self.handle_execution_error(e)
-
-    def pre_execution_checks(self) -> bool:
-        """Perform pre-execution health checks"""
+            self.logger().error(f"❌ Error initializing grid: {e}")
+    
+    def place_grid_orders(self, trading_pair: str):
+        """Place grid orders at calculated levels"""
         try:
-            # Check connector health
-            if self.exchange not in self.connectors:
-                self.logger().error("Exchange connector not available")
+            # Place buy orders
+            for level_price in self.grid_buy_levels:
+                if level_price not in [order.price for order in self.active_grid_orders[trading_pair]["buy"].values()]:
+                    if self.check_order_viability(trading_pair, True, level_price, Decimal(str(self.grid_order_amount))):
+                        order_id = self.buy(
+                            connector_name=self.exchange,
+                            trading_pair=trading_pair,
+                            amount=Decimal(str(self.grid_order_amount)),
+                            order_type=OrderType.LIMIT,
+                            price=level_price
+                        )
+                        if order_id:
+                            self.active_grid_orders[trading_pair]["buy"][order_id] = {
+                                'price': level_price,
+                                'amount': Decimal(str(self.grid_order_amount)),
+                                'timestamp': datetime.now()
+                            }
+            
+            # Place sell orders
+            for level_price in self.grid_sell_levels:
+                if level_price not in [order.price for order in self.active_grid_orders[trading_pair]["sell"].values()]:
+                    if self.check_order_viability(trading_pair, False, level_price, Decimal(str(self.grid_order_amount))):
+                        order_id = self.sell(
+                            connector_name=self.exchange,
+                            trading_pair=trading_pair,
+                            amount=Decimal(str(self.grid_order_amount)),
+                            order_type=OrderType.LIMIT,
+                            price=level_price
+                        )
+                        if order_id:
+                            self.active_grid_orders[trading_pair]["sell"][order_id] = {
+                                'price': level_price,
+                                'amount': Decimal(str(self.grid_order_amount)),
+                                'timestamp': datetime.now()
+                            }
+                            
+        except Exception as e:
+            self.logger().error(f"❌ Error placing grid orders: {e}")
+    
+    def manage_grid_orders(self, trading_pair: str):
+        """Manage existing grid orders and rebalance if needed"""
+        try:
+            # Check if grid needs rebalancing
+            if abs(float(self.current_price - self.grid_base_price)) / float(self.grid_base_price) > self.grid_rebalance_threshold:
+                self.logger().info(f"🔄 Grid rebalancing triggered for {trading_pair}")
+                self.cancel_all_grid_orders(trading_pair)
+                self.grid_initialized = False
+                return
+            
+            # Refresh old orders
+            self.refresh_old_grid_orders(trading_pair)
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error managing grid orders: {e}")
+    
+    def cancel_all_grid_orders(self, trading_pair: str):
+        """Cancel all active grid orders"""
+        try:
+            for side in ["buy", "sell"]:
+                for order_id in list(self.active_grid_orders[trading_pair][side].keys()):
+                    self.cancel(self.exchange, trading_pair, order_id)
+            
+            self.active_grid_orders[trading_pair] = {"buy": {}, "sell": {}}
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error canceling grid orders: {e}")
+    
+    def refresh_old_grid_orders(self, trading_pair: str):
+        """Refresh orders that are too old"""
+        try:
+            current_time = datetime.now()
+            max_order_age = timedelta(seconds=3600)  # 1 hour
+            
+            for side in ["buy", "sell"]:
+                orders_to_refresh = []
+                for order_id, order_data in self.active_grid_orders[trading_pair][side].items():
+                    if current_time - order_data['timestamp'] > max_order_age:
+                        orders_to_refresh.append(order_id)
+                
+                for order_id in orders_to_refresh:
+                    self.cancel(self.exchange, trading_pair, order_id)
+                    
+        except Exception as e:
+            self.logger().error(f"❌ Error refreshing grid orders: {e}")
+    
+    # ======================== LAUNCH STRATEGY (KAANERMI METHOD) ========================
+    
+    def execute_launch_strategy(self):
+        """Execute launch strategy based on Kaanermi method"""
+        try:
+            current_time = datetime.now().time()
+            
+            # Check if we're in NY session
+            self.launch_session_active = self.launch_time_start <= current_time <= self.launch_time_end
+            
+            if self.launch_session_active:
+                self.monitor_launch_levels()
+            else:
+                self.check_launch_opportunities()
+                
+        except Exception as e:
+            self.logger().error(f"❌ Error in launch strategy: {e}")
+    
+    def monitor_launch_levels(self):
+        """Monitor high/low levels during NY session"""
+        try:
+            # Update session high/low
+            if self.launch_high is None or self.current_price > self.launch_high:
+                self.launch_high = self.current_price
+            
+            if self.launch_low is None or self.current_price < self.launch_low:
+                self.launch_low = self.current_price
+            
+            # Check if we have valid range
+            if self.launch_high and self.launch_low:
+                launch_range = float(self.launch_high - self.launch_low)
+                range_pct = launch_range / float(self.current_price)
+                
+                if self.launch_min_range_pct <= range_pct <= self.launch_max_range_pct:
+                    self.launch_range_confirmed = True
+                    
+        except Exception as e:
+            self.logger().error(f"❌ Error monitoring launch levels: {e}")
+    
+    def check_launch_opportunities(self):
+        """Check for launch trading opportunities after NY session"""
+        try:
+            if not self.launch_range_confirmed or not self.launch_high or not self.launch_low:
+                return
+            
+            # Check cooldown
+            time_since_last_trade = (datetime.now() - self.last_launch_trade).total_seconds() / 60
+            if time_since_last_trade < self.launch_cooldown_minutes:
+                return
+            
+            # Check for needle formations (wick rejections)
+            launch_signals = self.detect_needle_formations()
+            
+            for signal in launch_signals:
+                if self.validate_launch_signal(signal):
+                    self.execute_launch_trade(signal)
+                    
+        except Exception as e:
+            self.logger().error(f"❌ Error checking launch opportunities: {e}")
+    
+    def detect_needle_formations(self) -> List[Dict]:
+        """Detect needle/wick formations at launch levels"""
+        signals = []
+        
+        try:
+            # Get recent price action
+            recent_prices = self.price_history[list(self.trading_pairs)[0]][-10:]
+            
+            if len(recent_prices) < 5:
+                return signals
+            
+            current_candle = recent_prices[-1]
+            prev_candle = recent_prices[-2]
+            
+            current_price = current_candle['price']
+            prev_price = prev_candle['price']
+            
+            # Check for rejection at launch high (bearish signal)
+            if (current_price >= float(self.launch_high) * 0.995 and
+                current_price < prev_price and
+                self.calculate_wick_body_ratio(recent_prices, 'high') >= self.needle_body_ratio):
+                
+                signals.append({
+                    'direction': 'sell',
+                    'level': self.launch_high,
+                    'confidence': self.calculate_signal_confidence('bearish'),
+                    'entry_price': self.current_price,
+                    'stop_loss': self.launch_high * Decimal("1.01"),
+                    'take_profit': self.launch_low
+                })
+            
+            # Check for rejection at launch low (bullish signal)
+            if (current_price <= float(self.launch_low) * 1.005 and
+                current_price > prev_price and
+                self.calculate_wick_body_ratio(recent_prices, 'low') >= self.needle_body_ratio):
+                
+                signals.append({
+                    'direction': 'buy',
+                    'level': self.launch_low,
+                    'confidence': self.calculate_signal_confidence('bullish'),
+                    'entry_price': self.current_price,
+                    'stop_loss': self.launch_low * Decimal("0.99"),
+                    'take_profit': self.launch_high
+                })
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error detecting needle formations: {e}")
+        
+        return signals
+    
+    def calculate_wick_body_ratio(self, candles: List[Dict], rejection_type: str) -> float:
+        """Calculate wick to body ratio for needle detection"""
+        try:
+            if len(candles) < 2:
+                return 0.0
+            
+            current = candles[-1]
+            prev = candles[-2]
+            
+            # Simplified calculation - in real implementation, you'd have OHLC data
+            body_size = abs(current['price'] - prev['price'])
+            
+            if rejection_type == 'high':
+                # Assuming upper wick rejection
+                high_price = max([c['price'] for c in candles[-3:]])
+                wick_size = high_price - max(current['price'], prev['price'])
+            else:
+                # Assuming lower wick rejection
+                low_price = min([c['price'] for c in candles[-3:]])
+                wick_size = min(current['price'], prev['price']) - low_price
+            
+            if body_size > 0:
+                return wick_size / body_size
+            return 0.0
+            
+        except Exception:
+            return 0.0
+    
+    def calculate_signal_confidence(self, direction: str) -> float:
+        """Calculate confidence score for launch signal"""
+        try:
+            confidence = 0.5  # Base confidence
+            
+            # Add confidence based on trend alignment
+            if self.enable_bias_filter:
+                if direction == 'bullish' and self.current_bias >= 0:
+                    confidence += 0.2
+                elif direction == 'bearish' and self.current_bias <= 0:
+                    confidence += 0.2
+                else:
+                    confidence -= 0.1
+            
+            # Add confidence based on volatility
+            if 1.0 <= self.volatility_ratio <= 3.0:  # Optimal volatility range
+                confidence += 0.2
+            
+            # Add confidence based on volume
+            if hasattr(self, 'current_volume_ratio') and self.current_volume_ratio > 1.2:
+                confidence += 0.1
+            
+            return min(1.0, max(0.0, confidence))
+            
+        except Exception:
+            return 0.5
+    
+    def validate_launch_signal(self, signal: Dict) -> bool:
+        """Validate launch signal before execution"""
+        try:
+            # Check minimum confidence
+            if signal['confidence'] < 0.6:
                 return False
             
-            # Check trading pair validity
-            connector = self.connectors[self.exchange]
-            if not connector.get_mid_price(self.trading_pairs[0]):
-                self.logger().warning("Trading pair price not available")
+            # Check risk limits
+            position_size = self.calculate_position_size(signal)
+            if position_size <= 0:
+                return False
+            
+            # Check if signal aligns with current market conditions
+            if self.enable_volatility_filter and self.volatility_ratio < self.volatility_threshold:
                 return False
             
             return True
             
         except Exception as e:
-            self.logger().error(f"Pre-execution check failed: {e}")
+            self.logger().error(f"❌ Error validating launch signal: {e}")
             return False
-
-    def execute_hybrid_strategy(self, df: pd.DataFrame):
-        """Execute the hybrid strategy components"""
-        try:
-            # Launch Strategy Execution
-            if self.enable_launch_strategy:
-                self.execute_launch_strategy_component(df)
-            
-            # Grid Strategy Execution
-            if self.enable_grid and self.can_trade:
-                self.execute_grid_strategy_component()
-                
-        except Exception as e:
-            self.logger().error(f"Error in hybrid strategy execution: {e}")
-
-    def handle_periodic_tasks(self):
-        """Handle periodic maintenance tasks"""
-        try:
-            current_time = datetime.now()
-            
-            # Save performance data every 10 minutes
-            if (current_time.minute % 10) == 0:
-                self.save_performance_data()
-            
-            # Log status summary every hour
-            if current_time.minute == 0:
-                self.log_hourly_summary()
-                
-        except Exception as e:
-            self.logger().error(f"Error in periodic tasks: {e}")
-
-    def log_hourly_summary(self):
-        """Log hourly strategy summary"""
-        try:
-            self.logger().info("⏰ Hourly Strategy Summary:")
-            self.logger().info(f"   Current Price: {self.current_price:.4f}")
-            self.logger().info(f"   Portfolio Risk: {self.current_portfolio_risk:.1f}%")
-            self.logger().info(f"   Active Trades: {self.active_trades_count}")
-            self.logger().info(f"   Total P&L: ${self.total_pnl:.2f}")
-            self.logger().info(f"   Win Rate: {self.win_rate:.1f}%")
-            
-        except Exception as e:
-            self.logger().error(f"Error logging hourly summary: {e}")
-
-    def handle_execution_error(self, error: Exception):
-        """Handle critical execution errors gracefully"""
-        try:
-            self.logger().error(f"Handling critical error: {error}")
-            
-            # Cancel all pending orders for safety
-            self.emergency_cancel_all_orders()
-            
-            # Set conservative mode
-            self.can_trade = False
-            self.restriction_reason = f"Emergency stop due to error: {str(error)[:50]}"
-            
-        except Exception as e:
-            self.logger().error(f"Error in error handler: {e}")
-
-    def emergency_cancel_all_orders(self):
-        """Emergency cancellation of all orders"""
-        try:
-            connector = self.connectors[self.exchange]
-            active_orders = connector.get_open_orders()
-            
-            cancelled = 0
-            for order in active_orders:
-                if order.trading_pair == self.trading_pairs[0]:
-                    try:
-                        connector.cancel(self.trading_pairs[0], order.client_order_id)
-                        cancelled += 1
-                    except:
-                        pass
-            
-            self.logger().info(f"🚨 Emergency cancellation: {cancelled} orders cancelled")
-            
-        except Exception as e:
-            self.logger().error(f"Emergency cancellation failed: {e}")
-
-    # Placeholder methods for strategy components (implement with same logic as before)
-    def execute_launch_strategy_component(self, df: pd.DataFrame):
-        """Execute launch strategy component - implement full logic here"""
-        pass  # Use the complete implementation from previous version
-
-    def execute_grid_strategy_component(self):
-        """Execute grid strategy component - implement full logic here"""
-        pass  # Use the complete implementation from previous version
-
-    def update_market_profile_analysis(self, df: pd.DataFrame):
-        """Update market profile analysis - implement full logic here"""
-        pass  # Use the complete implementation from previous version
-
-    def update_comprehensive_risk_metrics(self) -> bool:
-        """Update risk metrics - implement full logic here"""
-        return True  # Use the complete implementation from previous version
-
-    def update_performance_tracking(self):
-        """Update performance tracking - implement full logic here"""
-        pass  # Use the complete implementation from previous version
-
-    # ======================== STATUS DISPLAY ========================
     
-       def format_status(self) -> str:
-        """Enhanced status display for GitHub version"""
+    def execute_launch_trade(self, signal: Dict):
+        """Execute launch trade based on signal"""
+        try:
+            trading_pair = list(self.trading_pairs)[0]
+            
+            # Calculate position size
+            position_size = self.calculate_position_size(signal)
+            
+            if position_size <= 0:
+                return
+            
+            # Execute trade
+            if signal['direction'] == 'buy':
+                order_id = self.buy(
+                    connector_name=self.exchange,
+                    trading_pair=trading_pair,
+                    amount=position_size,
+                    order_type=OrderType.MARKET
+                )
+            else:
+                order_id = self.sell(
+                    connector_name=self.exchange,
+                    trading_pair=trading_pair,
+                    amount=position_size,
+                    order_type=OrderType.MARKET
+                )
+            
+            if order_id:
+                self.last_launch_trade = datetime.now()
+                self.total_launch_trades += 1
+                
+                self.logger().info(f"🎯 Launch trade executed: {signal['direction'].upper()} {position_size} {trading_pair}")
+                self.logger().info(f"   Entry: {signal['entry_price']:.6f}, SL: {signal['stop_loss']:.6f}, TP: {signal['take_profit']:.6f}")
+                
+        except Exception as e:
+            self.logger().error(f"❌ Error executing launch trade: {e}")
+    
+    # ======================== MARKET PROFILE ========================
+    
+    def update_market_profile(self):
+        """Update Market Profile data (POC, VAH, VAL)"""
+        try:
+            # Only update periodically
+            if (datetime.now() - self.last_mp_update).total_seconds() < self.mp_update_frequency * 60:
+                return
+            
+            trading_pair = list(self.trading_pairs)[0]
+            
+            # Get recent price data for TPO calculation
+            recent_data = self.price_history[trading_pair][-self.mp_session_length * 60:]  # Assuming 1-minute data
+            
+            if len(recent_data) < 100:
+                return
+            
+            # Calculate TPO (Time Price Opportunity) profile
+            self.calculate_tpo_profile(recent_data)
+            
+            # Update market profile values
+            self.calculate_market_profile_levels()
+            
+            self.last_mp_update = datetime.now()
+            self.mp_is_valid = True
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error updating market profile: {e}")
+    
+    def calculate_tpo_profile(self, price_data: List[Dict]):
+        """Calculate Time Price Opportunity profile"""
+        try:
+            if not price_data:
+                return
+            
+            # Get price range
+            prices = [item['price'] for item in price_data]
+            min_price = min(prices)
+            max_price = max(prices)
+            
+            # Create price levels
+            price_step = (max_price - min_price) / self.mp_price_levels
+            
+            # Initialize TPO counts
+            self.mp_tpo_data = {}
+            
+            for i in range(self.mp_price_levels):
+                level_price = min_price + (price_step * i)
+                self.mp_tpo_data[level_price] = 0
+            
+            # Count TPOs (time spent at each price level)
+            for data_point in price_data:
+                price = data_point['price']
+                volume = data_point.get('volume', 1)
+                
+                # Find closest price level
+                closest_level = min(self.mp_tpo_data.keys(), key=lambda x: abs(x - price))
+                self.mp_tpo_data[closest_level] += volume
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error calculating TPO profile: {e}")
+    
+    def calculate_market_profile_levels(self):
+        """Calculate POC, VAH, VAL from TPO data"""
+        try:
+            if not self.mp_tpo_data:
+                return
+            
+            # Find Point of Control (highest volume price level)
+            poc_level = max(self.mp_tpo_data.items(), key=lambda x: x[1])
+            self.mp_poc_price = Decimal(str(poc_level[0]))
+            
+            # Calculate Value Area (70% of total volume)
+            total_volume = sum(self.mp_tpo_data.values())
+            value_area_volume = total_volume * (self.mp_tpo_percent / 100)
+            
+            # Sort levels by volume
+            sorted_levels = sorted(self.mp_tpo_data.items(), key=lambda x: x[1], reverse=True)
+            
+            # Find Value Area High and Low
+            accumulated_volume = 0
+            value_area_prices = []
+            
+            for price, volume in sorted_levels:
+                accumulated_volume += volume
+                value_area_prices.append(price)
+                
+                if accumulated_volume >= value_area_volume:
+                    break
+            
+            if value_area_prices:
+                self.mp_vah_price = Decimal(str(max(value_area_prices)))
+                self.mp_val_price = Decimal(str(min(value_area_prices)))
+                self.mp_value_area_range = self.mp_vah_price - self.mp_val_price
+                
+                self.logger().info(f"📊 Market Profile Updated - POC: {self.mp_poc_price:.6f}, VAH: {self.mp_vah_price:.6f}, VAL: {self.mp_val_price:.6f}")
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error calculating market profile levels: {e}")
+    
+    # ======================== RISK MANAGEMENT ========================
+    
+    def risk_management_check(self) -> bool:
+        """Comprehensive risk management check"""
+        try:
+            # Update account info first
+            self.update_account_info()
+            
+            # Check minimum balance
+            if self.account_balance < self.min_balance_threshold:
+                self.can_trade = False
+                self.restriction_reason = f"Balance below minimum: ${self.account_balance:.2f} < ${self.min_balance_threshold}"
+                return False
+            
+            # Check portfolio risk
+            if self.current_portfolio_risk > self.max_portfolio_risk:
+                self.can_trade = False
+                self.restriction_reason = f"Portfolio risk too high: {self.current_portfolio_risk:.1f}% > {self.max_portfolio_risk:.1f}%"
+                return False
+            
+            # Check maximum concurrent trades
+            if self.active_trades_count >= self.max_concurrent_trades:
+                self.can_trade = False
+                self.restriction_reason = f"Too many active trades: {self.active_trades_count} >= {self.max_concurrent_trades}"
+                return False
+            
+            # Check consecutive losses
+            if self.consecutive_losses >= self.max_consecutive_losses:
+                self.can_trade = False
+                self.restriction_reason = f"Too many consecutive losses: {self.consecutive_losses} >= {self.max_consecutive_losses}"
+                return False
+            
+            # Check daily loss limit
+            daily_loss_pct = float(abs(self.daily_pnl)) / float(self.account_balance) * 100
+            if self.daily_pnl < 0 and daily_loss_pct > self.daily_loss_limit:
+                self.can_trade = False
+                self.restriction_reason = f"Daily loss limit exceeded: {daily_loss_pct:.1f}% > {self.daily_loss_limit:.1f}%"
+                return False
+            
+            # Check maximum drawdown
+            if self.max_drawdown > self.emergency_stop_drawdown:
+                self.can_trade = False
+                self.restriction_reason = f"Emergency drawdown stop: {self.max_drawdown:.1f}% > {self.emergency_stop_drawdown:.1f}%"
+                return False
+            
+            # All checks passed
+            self.can_trade = True
+            self.restriction_reason = ""
+            return True
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error in risk management check: {e}")
+            self.can_trade = False
+            self.restriction_reason = f"Risk check error: {e}"
+            return False
+    
+    def update_account_info(self):
+        """Update account balance and exposure information"""
+        try:
+            # Get account balance
+            balance_df = self.get_balance_df()
+            
+            if not balance_df.empty:
+                # Calculate total USDT equivalent balance
+                usdt_balance = 0
+                for _, row in balance_df.iterrows():
+                    if row['Asset'] == 'USDT':
+                        usdt_balance += float(row['Total Balance'])
+                    else:
+                        # Convert other assets to USDT (simplified)
+                        try:
+                            asset_price = self.get_asset_price_in_usdt(row['Asset'])
+                            if asset_price > 0:
+                                usdt_balance += float(row['Total Balance']) * asset_price
+                        except:
+                            pass
+                
+                self.account_balance = Decimal(str(usdt_balance))
+            
+            # Get active orders info
+            active_orders_df = self.active_orders_df()
+            self.active_trades_count = len(active_orders_df)
+            
+            # Calculate total exposure
+            if not active_orders_df.empty:
+                total_exposure = 0
+                for _, order in active_orders_df.iterrows():
+                    exposure = float(order['Amount']) * float(order['Price'])
+                    total_exposure += exposure
+                
+                self.total_exposure = Decimal(str(total_exposure))
+                
+                # Calculate portfolio risk percentage
+                if self.account_balance > 0:
+                    self.current_portfolio_risk = float(self.total_exposure) / float(self.account_balance) * 100
+            else:
+                self.total_exposure = Decimal("0")
+                self.current_portfolio_risk = 0.0
+                
+        except Exception as e:
+            self.logger().error(f"❌ Error updating account info: {e}")
+    
+    def get_asset_price_in_usdt(self, asset: str) -> float:
+        """Get asset price in USDT terms"""
+        try:
+            if asset == 'USDT':
+                return 1.0
+            
+            # Try to find a trading pair with USDT
+            possible_pairs = [f"{asset}-USDT", f"{asset}USDT"]
+            
+            for pair in possible_pairs:
+                try:
+                    mid_price = get_mid_price(self.connector, pair)
+                    if mid_price and mid_price > 0:
+                        return float(mid_price)
+                except:
+                    continue
+            
+            return 0.0
+            
+        except Exception:
+            return 0.0
+    
+    def calculate_position_size(self, signal: Dict) -> Decimal:
+        """Calculate appropriate position size based on risk management"""
+        try:
+            # Maximum position size based on portfolio risk limits
+            max_position_value = self.account_balance * Decimal(str(self.max_single_position / 100))
+            
+            # Calculate position size based on stop loss distance
+            entry_price = signal['entry_price']
+            stop_loss_price = signal['stop_loss']
+            
+            if entry_price > 0 and stop_loss_price > 0:
+                risk_per_unit = abs(entry_price - stop_loss_price)
+                
+                if risk_per_unit > 0:
+                    # Position size = Risk Amount / Risk Per Unit
+                    risk_amount = self.account_balance * Decimal(str(self.max_single_position / 100))
+                    position_size = risk_amount / risk_per_unit
+                    
+                    # Limit to maximum position value
+                    max_units = max_position_value / entry_price
+                    position_size = min(position_size, max_units)
+                    
+                    # Round to appropriate precision
+                    return max(Decimal("0"), position_size.quantize(Decimal('0.0001')))
+            
+            return Decimal("0")
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error calculating position size: {e}")
+            return Decimal("0")
+    
+    def check_order_viability(self, trading_pair: str, is_buy: bool, price: Decimal, amount: Decimal) -> bool:
+        """Check if order can be placed given current constraints"""
+        try:
+            # Check minimum order size
+            min_order_size = Decimal("0.001")  # Minimum order size
+            if amount < min_order_size:
+                return False
+            
+            # Check if price is reasonable (within 10% of current price)
+            price_deviation = abs(float(price - self.current_price)) / float(self.current_price)
+            if price_deviation > 0.1:  # 10% deviation limit
+                return False
+            
+            # Check balance availability
+            required_balance = amount * price if is_buy else amount
+            
+            balance_df = self.get_balance_df()
+            if not balance_df.empty:
+                asset_to_check = 'USDT' if is_buy else trading_pair.split('-')[0]
+                available_balance = 0
+                
+                for _, row in balance_df.iterrows():
+                    if row['Asset'] == asset_to_check:
+                        available_balance = float(row['Available Balance'])
+                        break
+                
+                if available_balance < float(required_balance) * 1.01:  # 1% buffer
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error checking order viability: {e}")
+            return False
+    
+    # ======================== PERFORMANCE TRACKING ========================
+    
+    def update_performance_metrics(self):
+        """Update performance metrics and statistics"""
+        try:
+            # Calculate win rate
+            if self.total_trades > 0:
+                self.win_rate = (self.winning_trades / self.total_trades) * 100
+            
+            # Update daily P&L (simplified)
+            # In real implementation, you'd track from session start
+            
+            # Calculate max drawdown (simplified)
+            if hasattr(self, 'peak_balance') and self.account_balance > 0:
+                current_drawdown = float((self.peak_balance - self.account_balance) / self.peak_balance * 100)
+                self.max_drawdown = max(self.max_drawdown, current_drawdown)
+            else:
+                self.peak_balance = self.account_balance
+                
+        except Exception as e:
+            self.logger().error(f"❌ Error updating performance metrics: {e}")
+    
+    def log_performance_data(self):
+        """Log performance data to JSON file for analysis"""
+        try:
+            performance_data = {
+                'timestamp': datetime.now().isoformat(),
+                'version': self.version,
+                'session_runtime_hours': round((datetime.now() - self.session_start_time).total_seconds() / 3600, 2),
+                'account_balance': float(self.account_balance),
+                'current_price': float(self.current_price),
+                'total_trades': self.total_trades,
+                'winning_trades': self.winning_trades,
+                'losing_trades': self.losing_trades,
+                'win_rate': self.win_rate,
+                'total_pnl': float(self.total_pnl),
+                'daily_pnl': float(self.daily_pnl),
+                'portfolio_risk': self.current_portfolio_risk,
+                'max_drawdown': self.max_drawdown,
+                'grid_trades': self.total_grid_trades,
+                'launch_trades': self.total_launch_trades,
+                'grid_profit': float(self.grid_profit),
+                'launch_profit': float(self.launch_profit),
+                'active_trades': self.active_trades_count,
+                'can_trade': self.can_trade,
+                'restriction_reason': self.restriction_reason,
+                'volatility_ratio': self.volatility_ratio,
+                'trend_direction': self.trend_direction,
+                'current_bias': self.current_bias,
+                'atr_value': float(self.atr_value),
+                'components': {
+                    'grid_enabled': self.enable_grid,
+                    'launch_enabled': self.enable_launch_strategy,
+                    'market_profile_enabled': self.enable_market_profile,
+                    'grid_initialized': self.grid_initialized,
+                    'launch_session_active': self.launch_session_active,
+                    'mp_valid': self.mp_is_valid
+                }
+            }
+            
+            # Write to file (append mode)
+            import json
+            with open(self.performance_log_file, 'a') as f:
+                f.write(json.dumps(performance_data) + '\n')
+                
+        except Exception as e:
+            self.logger().error(f"❌ Error logging performance data: {e}")
+    
+    # ======================== EVENT HANDLERS ========================
+    
+    def did_fill_order(self, event: OrderFilledEvent):
+        """Handle order fill events"""
+        try:
+            self.total_trades += 1
+            
+            # Update profit tracking
+            trade_profit = float(event.trade_fee.flat_fees[0].amount) if event.trade_fee.flat_fees else 0
+            
+            if event.trade_type.name == "BUY":
+                self.logger().info(f"✅ Buy order filled: {event.amount} {event.trading_pair} @ {event.price}")
+            else:
+                self.logger().info(f"✅ Sell order filled: {event.amount} {event.trading_pair} @ {event.price}")
+            
+            # Update grid order tracking
+            self.update_grid_order_tracking(event)
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error handling order fill: {e}")
+    
+       def did_complete_buy_order(self, event: BuyOrderCompletedEvent):
+        """Handle buy order completion"""
+        try:
+            self.logger().info(f"🟢 Buy order completed: {event.order_id}")
+            # Remove from grid tracking if it was a grid order
+            self.remove_completed_grid_order(event.order_id, "buy")
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error handling buy order completion: {e}")
+    
+    def did_complete_sell_order(self, event: SellOrderCompletedEvent):
+        """Handle sell order completion"""
+        try:
+            self.logger().info(f"🔴 Sell order completed: {event.order_id}")
+            # Remove from grid tracking if it was a grid order
+            self.remove_completed_grid_order(event.order_id, "sell")
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error handling sell order completion: {e}")
+    
+    def did_fail_order(self, event: MarketOrderFailureEvent):
+        """Handle order failures"""
+        try:
+            self.logger().warning(f"⚠️ Order failed: {event.order_id} - {event.order_type}")
+            # Remove failed order from tracking
+            self.remove_failed_grid_order(event.order_id)
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error handling order failure: {e}")
+    
+    def did_cancel_order(self, event: OrderCancelledEvent):
+        """Handle order cancellations"""
+        try:
+            self.logger().info(f"❌ Order cancelled: {event.order_id}")
+            # Remove cancelled order from tracking
+            self.remove_failed_grid_order(event.order_id)
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error handling order cancellation: {e}")
+    
+    def update_grid_order_tracking(self, event: OrderFilledEvent):
+        """Update grid order tracking after fill"""
+        try:
+            trading_pair = event.trading_pair
+            order_id = event.order_id
+            
+            # Find and remove filled order from grid tracking
+            for side in ["buy", "sell"]:
+                if order_id in self.active_grid_orders[trading_pair][side]:
+                    del self.active_grid_orders[trading_pair][side][order_id]
+                    self.total_grid_trades += 1
+                    self.grid_profit += Decimal(str(event.amount)) * Decimal(str(event.price)) * Decimal("0.001")  # Simplified profit calc
+                    
+                    self.logger().info(f"📊 Grid order filled: {side.upper()} {event.amount} @ {event.price}")
+                    break
+                    
+        except Exception as e:
+            self.logger().error(f"❌ Error updating grid order tracking: {e}")
+    
+    def remove_completed_grid_order(self, order_id: str, side: str):
+        """Remove completed order from grid tracking"""
+        try:
+            for trading_pair in self.trading_pairs:
+                if order_id in self.active_grid_orders[trading_pair][side]:
+                    del self.active_grid_orders[trading_pair][side][order_id]
+                    break
+                    
+        except Exception as e:
+            self.logger().error(f"❌ Error removing completed grid order: {e}")
+    
+    def remove_failed_grid_order(self, order_id: str):
+        """Remove failed order from grid tracking"""
+        try:
+            for trading_pair in self.trading_pairs:
+                for side in ["buy", "sell"]:
+                    if order_id in self.active_grid_orders[trading_pair][side]:
+                        del self.active_grid_orders[trading_pair][side][order_id]
+                        return
+                        
+        except Exception as e:
+            self.logger().error(f"❌ Error removing failed grid order: {e}")
+    
+    # ======================== STATUS AND DISPLAY ========================
+    
+    def format_status(self) -> str:
+        """Format status display for Hummingbot client"""
         try:
             lines = []
-            lines.append("\n" + "="*80)
-            lines.append(f"🚀 ULTIMATE HYBRID STRATEGY v{self.version} - GITHUB EDITION")
-            lines.append("   Grid Trading + Kaanermi Launch + Market Profile")
-            lines.append(f"   Repository: github.com/{self.github_repo}")
-            lines.append("="*80)
             
-            # Header Information
-            lines.append(f"📊 Exchange: {self.exchange} | Pair: {self.trading_pairs[0]} | Price: ${self.current_price:.4f}")
-            lines.append(f"⏰ Runtime: {(datetime.now() - self.session_start_time).total_seconds()/3600:.1f}h | Version: v{self.version}")
-            lines.append("")
+            # Header
+            lines.append("╔══════════════════════════════════════════════════════════════════════════════╗")
+            lines.append(f"║           🚀 ULTIMATE HYBRID STRATEGY v{self.version} - LIVE STATUS 🚀            ║")
+            lines.append("╠══════════════════════════════════════════════════════════════════════════════╣")
             
-            # Strategy Components Status
-            lines.append("🔧 STRATEGY COMPONENTS")
-            grid_status = "🟢 ACTIVE" if self.grid_initialized and self.enable_grid else "🔴 INACTIVE"
-            launch_status = "🟢 ACTIVE" if self.enable_launch_strategy else "🔴 INACTIVE"
-            mp_status = "🟢 ACTIVE" if self.enable_market_profile and self.mp_is_valid else "🔴 INACTIVE"
+            # Account Information
+            lines.append(f"║ 💰 Account Balance: ${self.account_balance:,.2f} USDT")
+            lines.append(f"║ 📊 Portfolio Risk: {self.current_portfolio_risk:.1f}% / {self.max_portfolio_risk:.1f}%")
+            lines.append(f"║ 🎯 Total Exposure: ${self.total_exposure:,.2f} USDT")
+            lines.append(f"║ 📈 Session P&L: ${self.daily_pnl:+,.2f} USDT")
+            lines.append(f"║ 📉 Max Drawdown: {self.max_drawdown:.1f}%")
             
-            lines.append(f"├─ Grid Trading: {grid_status} ({self.total_grid_trades} trades)")
-            lines.append(f"├─ Launch Strategy: {launch_status} ({self.total_launch_trades} trades)")
-            lines.append(f"├─ Market Profile: {mp_status}")
-            lines.append(f"└─ Risk Management: {'🟢 OPERATIONAL' if self.can_trade else '🔴 RESTRICTED'}")
-            lines.append("")
+            # Market Information
+            lines.append("╠══════════════════════════════════════════════════════════════════════════════╣")
+            lines.append(f"║ 💹 Current Price: ${self.current_price:.6f}")
+            lines.append(f"║ 📊 ATR Value: ${self.atr_value:.6f} ({self.volatility_ratio:.1f}‰)")
+            lines.append(f"║ 📈 Trend: {self.get_trend_display()} | Bias: {self.get_bias_display()}")
+            lines.append(f"║ ⏱️ Session Runtime: {self.get_runtime_display()}")
             
-            # Market Analysis
-            lines.append("📈 MARKET ANALYSIS")
-            trend_emoji = ["📉", "📊", "📈"][self.trend_direction + 1]
-            bias_emoji = ["🔻", "➡️", "🔺"][self.current_bias + 1]
-            lines.append(f"├─ Price: ${self.current_price:.4f} | ATR: {self.atr_value:.6f}")
-            lines.append(f"├─ Trend: {trend_emoji} | Bias: {bias_emoji} | Volatility: {self.volatility_ratio:.4f}")
-            lines.append(f"├─ SMA20: {self.sma_20:.4f} | SMA50: {self.sma_50:.4f}")
-            lines.append(f"└─ Momentum: {self.price_momentum:.4f}")
-            lines.append("")
+            # Component Status
+            lines.append("╠══════════════════════════════════════════════════════════════════════════════╣")
+            lines.append("║ 🔧 STRATEGY COMPONENTS:")
             
-            # Launch Strategy Details
+            # Grid Status
+            grid_status = "🟢 ACTIVE" if self.enable_grid and self.grid_initialized else "🟡 STANDBY" if self.enable_grid else "⚫ DISABLED"
+            grid_orders = sum(len(orders) for orders in self.active_grid_orders.get(list(self.trading_pairs)[0], {"buy": {}, "sell": {}}).values())
+            lines.append(f"║   🔲 Grid Trading: {grid_status} | Orders: {grid_orders} | Trades: {self.total_grid_trades}")
+            
+            if self.enable_grid and self.grid_initialized:
+                lines.append(f"║      • Base Price: ${self.grid_base_price:.6f} | Spacing: ${self.grid_spacing:.6f}")
+                lines.append(f"║      • Profit: ${self.grid_profit:+,.4f} USDT")
+            
+            # Launch Strategy Status
+            launch_status = "🟢 NY SESSION" if self.launch_session_active else "🟡 MONITORING" if self.enable_launch_strategy else "⚫ DISABLED"
+            lines.append(f"║   🎯 Launch Strategy: {launch_status} | Trades: {self.total_launch_trades}")
+            
             if self.enable_launch_strategy:
-                lines.append("🎯 LAUNCH STRATEGY (KAANERMI METHOD)")
-                session_status = "🟢 ACTIVE" if self.launch_session_active else "🔴 CLOSED"
-                lines.append(f"├─ NY Session: {session_status} ({self.launch_time_start}-{self.launch_time_end} TRT)")
-                
-                if self.launch_high and self.launch_low:
-                    launch_range = self.launch_high - self.launch_low
-                    lines.append(f"├─ Launch High: ${self.launch_high:.4f}")
-                    lines.append(f"├─ Launch Low: ${self.launch_low:.4f}")
-                    lines.append(f"├─ Range: ${launch_range:.4f} ({launch_range/self.current_price*100:.2f}%)")
-                else:
-                    lines.append("├─ Launch Levels: 🔍 Detecting...")
-                
-                cooldown_remaining = max(0, self.launch_cooldown_minutes - 
-                                      (datetime.now() - self.last_launch_trade).total_seconds() / 60)
-                lines.append(f"├─ Cooldown: {cooldown_remaining:.0f}m remaining")
-                lines.append(f"└─ Launch P&L: ${self.launch_profit:.2f}")
-                lines.append("")
+                time_to_next = self.get_time_to_next_session()
+                lines.append(f"║      • Range: ${self.launch_low:.6f} - ${self.launch_high:.6f} | Next: {time_to_next}")
+                lines.append(f"║      • Profit: ${self.launch_profit:+,.4f} USDT")
             
-            # Grid Strategy Details
-            if self.enable_grid:
-                lines.append("🔲 GRID TRADING SYSTEM")
-                lines.append(f"├─ Status: {'✅ ACTIVE' if self.grid_initialized else '⏳ INITIALIZING'}")
-                lines.append(f"├─ Mode: {self.grid_mode} | Levels: {self.base_grid_count}")
-                
-                if self.grid_base_price:
-                    deviation = abs(self.current_price - self.grid_base_price) / self.grid_base_price * 100
-                    lines.append(f"├─ Base: ${self.grid_base_price:.4f} | Deviation: {deviation:.2f}%")
-                    lines.append(f"├─ Spacing: {self.grid_spacing:.6f} | ATR Multiplier: {self.atr_multiplier}x")
-                    
-                    active_orders = len(self.active_grid_orders)
-                    lines.append(f"├─ Active Orders: {active_orders} | Max: {self.base_grid_count * 2}")
-                else:
-                    lines.append("├─ Initialization: In progress...")
-                
-                lines.append(f"└─ Grid P&L: ${self.grid_profit:.2f}")
-                lines.append("")
+            # Market Profile Status
+            mp_status = "🟢 ACTIVE" if self.enable_market_profile and self.mp_is_valid else "🟡 LOADING" if self.enable_market_profile else "⚫ DISABLED"
+            lines.append(f"║   📊 Market Profile: {mp_status}")
             
-            # Market Profile
             if self.enable_market_profile and self.mp_is_valid:
-                lines.append("📊 MARKET PROFILE")
-                lines.append(f"├─ POC: ${self.mp_poc_price:.4f} (Point of Control)")
-                lines.append(f"├─ VAH: ${self.mp_vah_price:.4f} (Value Area High)")
-                lines.append(f"├─ VAL: ${self.mp_val_price:.4f} (Value Area Low)")
-                lines.append(f"├─ Range: ${self.mp_value_area_range:.4f}")
-                lines.append(f"└─ Coverage: {self.mp_tpo_percent:.1f}% of trading activity")
-                lines.append("")
+                lines.append(f"║      • POC: ${self.mp_poc_price:.6f} | VAH: ${self.mp_vah_price:.6f} | VAL: ${self.mp_val_price:.6f}")
+                lines.append(f"║      • Value Area Range: ${self.mp_value_area_range:.6f}")
             
-            # Risk Management
-            lines.append("⚠️ RISK MANAGEMENT")
-            risk_color = "🟢" if self.current_portfolio_risk < 8 else "🟡" if self.current_portfolio_risk < 12 else "🔴"
-            lines.append(f"├─ Portfolio Risk: {risk_color} {self.current_portfolio_risk:.1f}% / {self.max_portfolio_risk:.1f}%")
-            lines.append(f"├─ Active Trades: {self.active_trades_count} / {self.max_concurrent_trades}")
-            lines.append(f"├─ Balance: ${self.account_balance:.2f} | Exposure: ${self.total_exposure:.2f}")
+            # Performance Metrics
+            lines.append("╠══════════════════════════════════════════════════════════════════════════════╣")
+            lines.append("║ 📈 PERFORMANCE METRICS:")
+            lines.append(f"║   📊 Total Trades: {self.total_trades} | Win Rate: {self.win_rate:.1f}%")
+            lines.append(f"║   💰 Total P&L: ${self.total_pnl:+,.4f} USDT")
+            lines.append(f"║   🎯 Wins: {self.winning_trades} | Losses: {self.losing_trades}")
+            lines.append(f"║   🔄 Active Orders: {self.active_trades_count}")
             
-            if self.can_trade:
-                lines.append("├─ Trading: ✅ ENABLED")
-            else:
-                lines.append(f"├─ Trading: ❌ DISABLED - {self.restriction_reason}")
+            # Risk Management Status
+            lines.append("╠══════════════════════════════════════════════════════════════════════════════╣")
+            lines.append("║ ⚠️ RISK MANAGEMENT:")
             
-            lines.append(f"└─ Stop Loss: {self.stop_loss_atr:.1f}x ATR | Take Profit: {self.take_profit_atr:.1f}x ATR")
-            lines.append("")
+            risk_status = "🟢 SAFE" if self.can_trade else "🔴 RESTRICTED"
+            lines.append(f"║   Status: {risk_status}")
             
-            # Performance Summary
-            lines.append("📈 PERFORMANCE METRICS")
-            lines.append(f"├─ Total Trades: {self.total_trades} (W:{self.winning_trades} L:{self.losing_trades})")
-            lines.append(f"├─ Win Rate: {self.win_rate:.1f}% | Max Drawdown: {self.max_drawdown:.1f}%")
-            lines.append(f"├─ Total P&L: ${self.total_pnl:.2f} | Daily: ${self.daily_pnl:.2f}")
-            lines.append(f"├─ Grid Profit: ${self.grid_profit:.2f} | Launch Profit: ${self.launch_profit:.2f}")
-            lines.append(f"└─ Session Runtime: {(datetime.now() - self.session_start_time).total_seconds()/3600:.1f}h")
-            lines.append("")
+            if not self.can_trade:
+                lines.append(f"║   Reason: {self.restriction_reason}")
             
-            # GitHub Information
-            lines.append("🔗 GITHUB INTEGRATION")
-            lines.append(f"├─ Version: v{self.version}")
-            lines.append(f"├─ Repository: {self.github_repo}")
-            lines.append(f"├─ Performance Log: {self.performance_log_file.split('/')[-1]}")
-            lines.append(f"└─ Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            lines.append("")
+            lines.append(f"║   Consecutive Losses: {self.consecutive_losses}/{self.max_consecutive_losses}")
             
-            lines.append("="*80)
-            lines.append("🎯 ULTIMATE HYBRID STRATEGY - PROFESSIONAL AUTOMATED TRADING")
-            lines.append("   Open Source | Production Ready | Community Driven")
-            lines.append("="*80)
+            # Footer
+            lines.append("╠══════════════════════════════════════════════════════════════════════════════╣")
+            lines.append(f"║ 🔗 Repository: github.com/{self.github_repo}")
+            lines.append(f"║ ⏰ Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            lines.append("╚══════════════════════════════════════════════════════════════════════════════╝")
             
             return "\n".join(lines)
             
         except Exception as e:
-            self.logger().error(f"Error formatting status display: {e}")
-            return f"❌ Status Display Error: {e}"
-
-    # ======================== GITHUB SPECIFIC METHODS ========================
+            self.logger().error(f"❌ Error formatting status: {e}")
+            return f"❌ Status display error: {e}"
     
-    def get_github_status(self) -> Dict:
-        """Get status information for GitHub integration"""
-        return {
-            "version": self.version,
-            "repository": self.github_repo,
-            "status": "running" if self.can_trade else "restricted",
-            "uptime_hours": round((datetime.now() - self.session_start_time).total_seconds() / 3600, 1),
-            "components": {
-                "grid_trading": self.enable_grid and self.grid_initialized,
-                "launch_strategy": self.enable_launch_strategy,
-                "market_profile": self.enable_market_profile and self.mp_is_valid,
-                "risk_management": True
-            },
-            "performance": {
-                "total_trades": self.total_trades,
-                "win_rate": self.win_rate,
-                "total_pnl": self.total_pnl,
-                "portfolio_risk": self.current_portfolio_risk
-            },
-            "market_data": {
-                "current_price": self.current_price,
-                "atr": self.atr_value,
-                "volatility": self.volatility_ratio,
-                "trend": self.trend_direction
+    def get_trend_display(self) -> str:
+        """Get trend direction display"""
+        if self.trend_direction == 1:
+            return "🟢 UP"
+        elif self.trend_direction == -1:
+            return "🔴 DOWN"
+        else:
+            return "🟡 SIDEWAYS"
+    
+    def get_bias_display(self) -> str:
+        """Get bias display"""
+        if self.current_bias == 1:
+            return "🟢 BULLISH"
+        elif self.current_bias == -1:
+            return "🔴 BEARISH"
+        else:
+            return "🟡 NEUTRAL"
+    
+    def get_runtime_display(self) -> str:
+        """Get formatted runtime display"""
+        runtime = datetime.now() - self.session_start_time
+        hours = int(runtime.total_seconds() // 3600)
+        minutes = int((runtime.total_seconds() % 3600) // 60)
+        return f"{hours:02d}h {minutes:02d}m"
+    
+    def get_time_to_next_session(self) -> str:
+        """Get time to next NY session"""
+        try:
+            now = datetime.now().time()
+            
+            if now < self.launch_time_start:
+                # Session hasn't started today
+                next_session = datetime.combine(datetime.now().date(), self.launch_time_start)
+            elif now > self.launch_time_end:
+                # Session ended, next is tomorrow
+                next_session = datetime.combine(datetime.now().date() + timedelta(days=1), self.launch_time_start)
+            else:
+                # Currently in session
+                return "ACTIVE"
+            
+            time_diff = next_session - datetime.now()
+            hours = int(time_diff.total_seconds() // 3600)
+            minutes = int((time_diff.total_seconds() % 3600) // 60)
+            
+            return f"{hours:02d}h {minutes:02d}m"
+            
+        except Exception:
+            return "Unknown"
+    
+    # ======================== UTILITY METHODS ========================
+    
+    def notify_performance_milestone(self, milestone: str):
+        """Send notification for performance milestones"""
+        try:
+            message = f"🎯 Ultimate Hybrid Strategy Milestone: {milestone}"
+            self.notify_hb_app_with_timestamp(message)
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error sending notification: {e}")
+    
+    def emergency_stop(self, reason: str):
+        """Emergency stop all trading activities"""
+        try:
+            self.logger().error(f"🚨 EMERGENCY STOP TRIGGERED: {reason}")
+            
+            # Cancel all active orders
+            for trading_pair in self.trading_pairs:
+                self.cancel_all_grid_orders(trading_pair)
+            
+            # Disable trading
+            self.can_trade = False
+            self.restriction_reason = f"Emergency stop: {reason}"
+            
+            # Send notification
+            self.notify_hb_app_with_timestamp(f"🚨 Emergency Stop: {reason}")
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error in emergency stop: {e}")
+    
+    def save_session_summary(self):
+        """Save session summary when strategy stops"""
+        try:
+            summary = {
+                'session_start': self.session_start_time.isoformat(),
+                'session_end': datetime.now().isoformat(),
+                'final_balance': float(self.account_balance),
+                'total_trades': self.total_trades,
+                'win_rate': self.win_rate,
+                'total_pnl': float(self.total_pnl),
+                'max_drawdown': self.max_drawdown,
+                'grid_trades': self.total_grid_trades,
+                'launch_trades': self.total_launch_trades,
+                'version': self.version
             }
-        }
-STRATEGY_EOF
+            
+            # Save to file
+            import json
+            summary_file = f"logs/session_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(summary_file, 'w') as f:
+                json.dump(summary, f, indent=2)
+            
+            self.logger().info(f"💾 Session summary saved: {summary_file}")
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error saving session summary: {e}")
+    
+    # ======================== CLEANUP AND SHUTDOWN ========================
+    
+    def on_stop(self):
+        """Called when strategy is stopped"""
+        try:
+            self.logger().info("🛑 Ultimate Hybrid Strategy stopping...")
+            
+            # Cancel all active orders
+            for trading_pair in self.trading_pairs:
+                self.cancel_all_grid_orders(trading_pair)
+            
+            # Save session data
+            self.save_session_summary()
+            
+            # Final performance notification
+            final_message = (f"📊 Session Complete | "
+                           f"Runtime: {self.get_runtime_display()} | "
+                           f"Trades: {self.total_trades} | "
+                           f"Win Rate: {self.win_rate:.1f}% | "
+                           f"P&L: ${self.total_pnl:+,.2f}")
+            
+            self.notify_hb_app_with_timestamp(final_message)
+            
+            self.logger().info("✅ Ultimate Hybrid Strategy stopped successfully")
+            
+        except Exception as e:
+            self.logger().error(f"❌ Error stopping strategy: {e}")
