@@ -1,171 +1,217 @@
-cat > config/ultimate_hybrid_strategy_config.yml << 'CONFIG_EOF'
-# Ultimate Hybrid Trading Strategy Configuration
-# GitHub Repository Version 2.0
-# https://github.com/your-username/hummingbot-ultimate-hybrid
+# Ultimate Hybrid Strategy Configuration File
+# Repository: https://github.com/anbarci/hummingbot-ultimate-hybrid
+# Version: 2.0
 
-template_version: 30
-strategy: ultimate_hybrid_strategy
-
-# ======================== BASIC CONFIGURATION ========================
-
-# Exchange and Trading Pair
-exchange: kucoin
-trading_pairs: 
-  - WLD-USDT
-
-# Strategy Version Control
-version: "2.0"
-github_repo: "hummingbot-ultimate-hybrid"
+# ======================== EXCHANGE & TRADING PAIRS ========================
+exchange: "kucoin"
+trading_pairs:
+  - "WLD-USDT"
+  - "ARKM-USDT"
+  - "AI-USDT"
 
 # ======================== GRID TRADING CONFIGURATION ========================
+grid_trading:
+  enabled: true
+  mode: "ATR Based"  # Options: "ATR Based", "Percentage Based"
+  
+  # Grid Structure
+  base_grid_count: 8           # Number of levels each side
+  base_spacing_pct: 1.2        # Base spacing percentage (if not ATR)
+  order_amount: 0.1            # Order size per level
+  
+  # ATR Configuration
+  atr_period: 14               # ATR calculation period
+  atr_multiplier: 1.5          # ATR multiplier for spacing
+  
+  # Grid Management
+  rebalance_threshold: 5.0     # Rebalance when price moves 5%
+  max_spread: 15.0             # Maximum total grid spread %
+  min_spread: 0.5              # Minimum spacing between levels %
+  order_refresh_time: 30       # Refresh orders every N seconds
 
-# Grid Strategy Settings
-enable_grid: true
-grid_mode: "ATR Based"               # Options: "Fixed", "ATR Based", "Percentage"
-base_grid_count: 8                   # Number of levels each side (8 buy + 8 sell)
-base_spacing_pct: 1.2               # Base spacing percentage
-atr_period: 14                       # ATR calculation period
-atr_multiplier: 1.5                 # ATR multiplier for dynamic spacing
-grid_rebalance_threshold: 0.05      # Rebalance when price moves >5%
-
-# Grid Advanced Settings
-grid_order_amount: 0.1              # Order amount per grid level
-grid_max_spread: 0.15               # Maximum spread from base price (15%)
-grid_min_spread: 0.005              # Minimum spread from base price (0.5%)
-
-# ======================== LAUNCH STRATEGY CONFIGURATION ========================
-
-# Launch Strategy (Kaanermi Method)
-enable_launch_strategy: true
-launch_time_start: "01:00"          # NY session start (24h format)
-launch_time_end: "08:00"            # NY session end (24h format)
-needle_body_ratio: 2.0              # Minimum wick/body ratio for needle detection
-launch_cooldown_minutes: 30         # Cooldown between launch trades
-enable_bias_filter: true            # Use trend bias for launch direction
-
-# Launch Advanced Settings
-launch_min_range_pct: 0.005         # Minimum launch range (0.5%)
-launch_max_range_pct: 0.050         # Maximum launch range (5.0%)
-launch_volume_threshold: 1.2        # Volume multiplier threshold
-launch_confirmation_candles: 2      # Candles for confirmation
+# ======================== LAUNCH STRATEGY (KAANERMI METHOD) ========================
+launch_strategy:
+  enabled: true
+  
+  # NY Session Timing (TRT)
+  session_start: "01:00"       # NY session start (TRT)
+  session_end: "08:00"         # NY session end (TRT)
+  
+  # Needle Detection
+  needle_body_ratio: 2.0       # Minimum wick/body ratio
+  min_range_pct: 0.5           # Minimum session range %
+  max_range_pct: 5.0           # Maximum session range %
+  
+  # Trade Management
+  cooldown_minutes: 30         # Minutes between launch trades
+  enable_bias_filter: true     # Use trend bias filtering
+  max_concurrent_launches: 3   # Max simultaneous launch trades
 
 # ======================== MARKET PROFILE CONFIGURATION ========================
-
-# Market Profile Settings
-enable_market_profile: true
-mp_session_length: 24               # Hours for market profile calculation
-mp_tpo_percent: 70.0               # Value area percentage
-mp_price_levels: 20                # Number of price levels for TPO
-mp_update_frequency: 30            # Update frequency in minutes
-
-# Market Profile Advanced
-mp_poc_weight: 0.4                 # POC influence on grid base price
-mp_value_area_filter: true         # Filter trades outside value area
-mp_volume_threshold: 1000          # Minimum volume for valid TPO
+market_profile:
+  enabled: true
+  
+  # Session Configuration
+  session_length_hours: 24     # Market profile session length
+  tpo_coverage_percent: 70.0   # Value area coverage %
+  price_levels: 20             # Number of price levels for TPO
+  
+  # Update Settings
+  update_frequency_minutes: 30 # Update frequency
+  poc_weight: 0.4              # POC influence on grid base (0.0-1.0)
+  
+  # Integration Settings
+  use_poc_for_grid: true       # Use POC for grid positioning
+  use_va_for_filters: true     # Use Value Area for trade filters
 
 # ======================== RISK MANAGEMENT CONFIGURATION ========================
+risk_management:
+  enabled: true
+  
+  # Portfolio Limits
+  max_portfolio_risk: 12.0     # Maximum portfolio exposure %
+  max_single_position: 4.0     # Maximum single position risk %
+  max_concurrent_trades: 10    # Maximum concurrent trades
+  min_balance_threshold: 50    # Minimum account balance $
+  
+  # Trade Risk Settings
+  stop_loss_atr: 2.0           # Stop loss distance (ATR multiplier)
+  take_profit_atr: 3.5         # Take profit distance (ATR multiplier)
+  risk_reward_ratio: 1.75      # Minimum risk/reward ratio
+  
+  # Emergency Controls
+  emergency_stop_drawdown: 20.0 # Emergency stop at drawdown %
+  daily_loss_limit: 5.0        # Daily loss limit %
+  max_consecutive_losses: 5    # Max consecutive losing trades
+  
+  # Position Sizing
+  kelly_criterion: false       # Use Kelly Criterion for sizing
+  fixed_risk_percent: 2.0      # Fixed risk per trade %
+  max_leverage: 1.0            # Maximum leverage allowed
 
-# Portfolio Risk Settings
-enable_advanced_risk: true
-max_portfolio_risk: 12.0           # Maximum portfolio exposure (12%)
-max_single_position: 4.0           # Maximum single position size (4%)
-max_concurrent_trades: 10          # Maximum number of concurrent trades
-min_balance_threshold: 50          # Minimum account balance to trade
+# ======================== MARKET FILTERS ========================
+filters:
+  # Volatility Filter
+  volatility_filter:
+    enabled: true
+    threshold: 1.5             # Minimum volatility ratio (‰)
+    period: 20                 # Volatility calculation period
+    high_volatility_threshold: 5.0 # Stop trading above this volatility
+  
+  # Trend Filter
+  trend_filter:
+    enabled: true
+    period: 50                 # Trend calculation period
+    strength_threshold: 1.5    # Minimum trend strength %
+    confirmation_period: 3     # Trend confirmation candles
+  
+  # Volume Filter
+  volume_filter:
+    enabled: true
+    min_volume_ratio: 0.5      # Minimum volume vs average
+    spike_threshold: 3.0       # Volume spike detection
+    period: 20                 # Volume average period
 
-# Position Risk Settings
-stop_loss_atr: 2.0                 # Stop loss distance in ATR multiples
-take_profit_atr: 3.5               # Take profit distance in ATR multiples
-risk_reward_ratio: 1.75            # Minimum risk/reward ratio
-trailing_stop_enabled: false      # Enable trailing stops
-trailing_stop_atr: 1.0             # Trailing stop distance
+# ======================== PERFORMANCE SETTINGS ========================
+performance:
+  # Update Intervals
+  price_update_interval: 5     # Price update frequency (seconds)
+  status_update_interval: 60   # Status display update (seconds)
+  performance_log_interval: 300 # Performance logging (seconds)
+  
+  # Data Storage
+  max_price_history: 500       # Maximum price history records
+  max_trade_history: 1000      # Maximum trade history records
+  
+  # Logging
+  log_level: "INFO"            # Log level (DEBUG, INFO, WARNING, ERROR)
+  save_performance_data: true  # Save performance to JSON
+  enable_notifications: true   # Enable telegram/discord notifications
 
-# Emergency Settings
-emergency_stop_drawdown: 20.0      # Emergency stop at 20% drawdown
-daily_loss_limit: 5.0              # Daily loss limit (5% of balance)
-max_consecutive_losses: 5          # Max consecutive losing trades
-
-# ======================== ADVANCED FILTERS CONFIGURATION ========================
-
-# Volatility Filter
-enable_volatility_filter: true
-volatility_threshold: 1.5          # Minimum volatility ratio (ATR/Price * 1000)
-volatility_period: 20              # Volatility calculation period
-high_volatility_threshold: 5.0     # High volatility threshold
-
-# Trend Filter
-enable_trend_filter: true
-trend_period: 50                   # Trend calculation period
-trend_strength_threshold: 0.015    # Minimum trend strength (1.5%)
-trend_confirmation_period: 3       # Trend confirmation candles
-
-# Time Filter
-enable_time_filter: true
-avoid_low_liquidity_hours: true    # Avoid trading during low liquidity
-weekend_trading: false             # Disable weekend trading
-holiday_filter: true               # Filter major holidays
-
-# Volume Filter
-enable_volume_filter: true
-min_volume_ratio: 0.5             # Minimum volume vs average
-volume_spike_threshold: 3.0        # Volume spike detection
-volume_period: 20                  # Volume average period
-
-# ======================== PERFORMANCE OPTIMIZATION ========================
-
-# Execution Settings
-order_refresh_time: 30             # Order refresh interval (seconds)
-price_update_interval: 5           # Price update interval (seconds)
-status_update_interval: 60         # Status display update (seconds)
-
-# Data Management
-max_price_history: 500             # Maximum price history records
-max_trade_history: 1000            # Maximum trade history records
-performance_log_interval: 600      # Performance logging interval (seconds)
-
-# Memory Management
-cleanup_interval: 3600             # Memory cleanup interval (seconds)
-max_log_size_mb: 100              # Maximum log file size (MB)
-log_rotation_days: 7               # Log rotation period (days)
-
-# ======================== GITHUB INTEGRATION ========================
-
-# Repository Settings
-auto_update_check: false           # Automatically check for updates
-update_check_interval: 86400      # Update check interval (24 hours)
-telemetry_enabled: false          # Send anonymous usage data
-
-# Performance Logging
-github_performance_log: true       # Log performance for GitHub analytics
-export_trade_data: true           # Export trade data for analysis
-backup_config: true               # Backup configuration changes
-
-# Development Settings
-debug_mode: false                  # Enable debug logging
-test_mode: false                   # Enable test mode (paper trading)
-simulation_mode: false            # Use simulated market data
+# ======================== ADVANCED SETTINGS ========================
+advanced:
+  # Strategy Behavior
+  start_immediately: true      # Start trading immediately
+  warm_up_period: 300          # Strategy warm-up period (seconds)
+  
+  # Order Management
+  order_optimization: true     # Optimize order placement
+  smart_order_routing: false   # Use smart order routing
+  
+  # Market Making
+  inventory_management: true   # Enable inventory balancing
+  hedge_mode: false            # Enable hedging
+  
+  # Development
+  debug_mode: false            # Enable debug logging
+  backtest_mode: false         # Backtest mode (paper trading)
+  
+  # Integration
+  external_signals: false      # Accept external trading signals
+  webhook_enabled: false       # Enable webhook integration
+  
+# ======================== EXCHANGE SPECIFIC SETTINGS ========================
+exchange_settings:
+  kucoin:
+    api_rate_limit: 10         # API calls per second limit
+    order_book_depth: 20       # Order book levels to fetch
+    use_websocket: true        # Use WebSocket for real-time data
+    
+    # Trading Settings
+    min_order_size: 0.001      # Minimum order size
+    price_precision: 6         # Price decimal places
+    amount_precision: 4        # Amount decimal places
+    
+    # Fees
+    maker_fee: 0.1             # Maker fee percentage
+    taker_fee: 0.1             # Taker fee percentage
 
 # ======================== NOTIFICATION SETTINGS ========================
+notifications:
+  telegram:
+    enabled: false             # Enable Telegram notifications
+    chat_id: ""                # Telegram chat ID
+    bot_token: ""              # Telegram bot token
+    
+    # Notification Events
+    notify_on_start: true      # Notify when strategy starts
+    notify_on_stop: true       # Notify when strategy stops
+    notify_on_trade: true      # Notify on trade execution
+    notify_on_milestone: true  # Notify on P&L milestones
+    notify_on_error: true      # Notify on errors
+  
+  discord:
+    enabled: false             # Enable Discord notifications
+    webhook_url: ""            # Discord webhook URL
+  
+  email:
+    enabled: false             # Enable email notifications
+    smtp_server: ""            # SMTP server
+    smtp_port: 587             # SMTP port
+    username: ""               # Email username
+    password: ""               # Email password
+    to_email: ""               # Recipient email
 
-# Alert Thresholds
-profit_alert_threshold: 100       # Profit alert threshold ($)
-loss_alert_threshold: -50         # Loss alert threshold ($)
-risk_alert_threshold: 10.0        # Risk level alert (10%)
-
-# Status Reporting
-hourly_status_report: true         # Send hourly status reports
-daily_summary_report: true         # Send daily summary reports
-trade_execution_alerts: true      # Alert on trade executions
-
-# ======================== EXCHANGE SPECIFIC SETTINGS ========================
-
-# KuCoin Specific
-kucoin_sandbox: false             # Use KuCoin sandbox
-kucoin_api_tier: "basic"          # API tier (basic/pro)
-kucoin_rate_limit: 10             # API calls per second
-
-# Order Management
-order_type_preference: "limit"     # Preferred order type
-max_order_age: 3600               # Maximum order age (seconds)
-order_size_precision: 4           # Order size decimal precision
-price_precision: 4                # Price decimal precision
-CONFIG_EOF
+# ======================== BACKUP & RECOVERY ========================
+backup:
+  enabled: true
+  auto_backup_interval: 3600   # Auto backup every hour (seconds)
+  max_backup_files: 48         # Keep 48 hours of backups
+  backup_on_stop: true         # Backup when strategy stops
+  
+# ======================== VERSION INFO ========================
+meta:
+  version: "2.0"
+  author: "anbarci"
+  repository: "https://github.com/anbarci/hummingbot-ultimate-hybrid"
+  license: "MIT"
+  last_updated: "2025-08-31"
+  hummingbot_version: "2.8.0+"
+  
+# ======================== DISCLAIMER ========================
+disclaimer: |
+  This trading strategy is provided for educational purposes only.
+  Cryptocurrency trading involves substantial risk of loss.
+  Past performance does not guarantee future results.
+  Trade at your own risk and only with funds you can afford to lose.
+  The authors are not responsible for any financial losses.
